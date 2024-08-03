@@ -1,0 +1,32 @@
+---
+name: "Bug report"
+description: "Report a bug with the integration"
+labels: "Bug"
+body:
+- type: markdown
+  attributes:
+    value: Before you open a new issue, search through the existing issues to see if others have had the same problem.
+- type: textarea
+  attributes:
+    label: "Describe the issue"
+    description: "A clear and concise description of what the issue is."
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Reproduction steps
+    description: "Without steps to reproduce, it will be hard to fix. Please try to find exact steps to reproduce your issue."
+    value: |
+      1.
+      2.
+      3.
+      ...
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: "Debug logs"
+    description: "To enable debug logs check this https://www.home-assistant.io/integrations/logger/, this **needs** to include _everything_ from startup of Home Assistant to the point where you encounter the issue."
+    render: text
+  validations:
+    required: true

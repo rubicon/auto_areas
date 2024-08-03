@@ -1,42 +1,17 @@
-import logging
-from typing import List
+"""Binary sensor platform for auto_areas."""
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.area_registry import AreaRegistry
-from homeassistant.helpers.device_registry import DeviceRegistry
-from homeassistant.helpers.entity import Entity
+from __future__ import annotations
+
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity_registry import EntityRegistry
+from custom_components.auto_areas.binary_sensors.presence import PresenceBinarySensor
 
-from custom_components.auto_areas.presence_binary_sensor import (
-    PresenceBinarySensor,
+from .auto_area import AutoArea
+from .const import (
+    DOMAIN,
 )
-from custom_components.auto_areas.const import AUTO_AREAS_RELEVANT_DOMAINS
-from custom_components.auto_areas.ha_helpers import get_all_entities
-
-_LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info=None,
-):
-    """Set up all binary_sensors"""
-    area_registry: AreaRegistry = hass.helpers.area_registry.async_get(hass)
-    entity_registry: EntityRegistry = (
-        hass.helpers.entity_registry.async_get(hass)
-    )
-    device_registry: DeviceRegistry = (
-        hass.helpers.device_registry.async_get(hass)
-    )
-
-    binary_sensor_entities = []
-    for area in area_registry.async_list_areas():
-        area_entities: List[Entity] = get_all_entities(
-            entity_registry, device_registry, area.id, AUTO_AREAS_RELEVANT_DOMAINS
-        )
-        binary_sensor_entities.append(PresenceBinarySensor(hass, area_entities, area))
-
-    async_add_entities(binary_sensor_entities)
+async def async_setup_entry(hass, entry, async_add_entities: AddEntitiesCallback):
+    """Set up the binary_sensor platform."""
+    auto_area: AutoArea = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([PresenceBinarySensor(hass, auto_area)])

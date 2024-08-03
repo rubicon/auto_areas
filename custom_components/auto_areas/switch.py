@@ -1,38 +1,23 @@
-import logging
-from typing import Dict, List
+"""Switch platform for integration_blueprint."""
+from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from custom_components.auto_areas.auto_area import AutoArea
-from custom_components.auto_areas.const import (
-    CONFIG_SLEEPING_AREA,
-    DOMAIN_DATA,
-)
-from custom_components.auto_areas.ha_helpers import get_data
-from custom_components.auto_areas.presence_lock_switch import PresenceLockSwitch
-from custom_components.auto_areas.sleep_mode_switch import SleepModeSwitch
+from custom_components.auto_areas.const import CONFIG_IS_SLEEPING_AREA, DOMAIN
+from custom_components.auto_areas.switches.presence_lock import PresenceLockSwitch
+from custom_components.auto_areas.switches.sleep_mode import SleepModeSwitch
 
-_LOGGER = logging.getLogger(__name__)
+from .auto_area import AutoArea
 
 
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info=None,
-):
-    """Set up all switches"""
-    _LOGGER.info("Setup switch platform %s", config)
+async def async_setup_entry(hass, entry, async_add_entities: AddEntitiesCallback):
+    """Set up the switch platform."""
+    auto_area: AutoArea = hass.data[DOMAIN][entry.entry_id]
 
-    auto_areas: Dict[str, AutoArea] = get_data(hass, DOMAIN_DATA)
+    switch_entities: list[Entity] = [PresenceLockSwitch(auto_area)]
 
-    entities: List[Entity] = []
+    if auto_area.config_entry.options.get(CONFIG_IS_SLEEPING_AREA):
+        switch_entities.append(SleepModeSwitch(auto_area))
 
-    for auto_area in auto_areas.values():
-        entities.append(PresenceLockSwitch(hass, auto_area.area))
-        if auto_area.config.get(CONFIG_SLEEPING_AREA) is True:
-            entities.append(SleepModeSwitch(hass, auto_area.area))
-
-    async_add_entities(entities)
+    async_add_entities(switch_entities)

@@ -1,80 +1,108 @@
-"""AutoAreas custom_component for Home Assistant"""
-import logging
-from typing import MutableMapping
+"""🤖 Auto Areas. A custom component for Home Assistant which automates your areas."""
+from __future__ import annotations
+import asyncio
 
-from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
-from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import discovery
-from homeassistant.helpers.area_registry import AreaRegistry
+from homeassistant.helpers import issue_registry
 from homeassistant.helpers.typing import ConfigType
-import voluptuous as vol
-from voluptuous.error import MultipleInvalid
-from voluptuous.schema_builder import PREVENT_EXTRA
-
-from custom_components.auto_areas.auto_area import AutoArea
-from custom_components.auto_areas.ha_helpers import set_data
-
-from .const import CONFIG_SLEEPING_AREA, DOMAIN, DOMAIN_DATA
-
-_LOGGER = logging.getLogger(__name__)
-
-area_config_schema = vol.Schema({CONFIG_SLEEPING_AREA: bool}, extra=PREVENT_EXTRA)
-config_schema = vol.Schema({str: {CONFIG_SLEEPING_AREA: bool}})
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Setup integration (YAML-based)"""
+from .auto_area import (
+    AutoArea,
+)
 
-    # Load and validate config
-    auto_areas_config: dict = config.get(DOMAIN) or {}
-    try:
-        config_schema(auto_areas_config)
-    except MultipleInvalid as exception:
-        _LOGGER.error(
-            "Configuration is invalid (validation message: '%s'). Config: %s",
-            exception.error_message,
-            auto_areas_config,
+from .const import DOMAIN, LOGGER, ISSUE_TYPE_YAML_DETECTED
+
+PLATFORMS: list[Platform] = [
+    Platform.SWITCH,
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.COVER,
+    Platform.LIGHT,
+]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Initialize AutoArea for this config entry."""
+    hass.data.setdefault(DOMAIN, {})
+
+    auto_area = AutoArea(hass=hass, entry=entry)
+    hass.data[DOMAIN][entry.entry_id] = auto_area
+
+    if hass.is_running:
+        # Initialize immediately
+        await async_init(hass, entry, auto_area)
+    else:
+        # Schedule initialization when HA is started and initialized
+        # https://developers.home-assistant.io/docs/asyncio_working_with_async/#calling-async-functions-from-threads
+
+        @callback
+        def init(hass: HomeAssistant, entry: ConfigEntry, auto_area: AutoArea):
+            asyncio.run_coroutine_threadsafe(
+                async_init(hass, entry, auto_area), hass.loop
+            ).result()
+
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED,
+            lambda params: init(hass, entry, auto_area)
         )
-        return False
-
-    _LOGGER.debug("Found config %s", auto_areas_config)
-
-    area_registry: AreaRegistry = hass.helpers.area_registry.async_get(hass)
-
-    auto_areas: MutableMapping[str, AutoArea] = {}
-
-    for area in area_registry.async_list_areas():
-        auto_areas[area.id] = AutoArea(hass, area, auto_areas_config)
-
-    set_data(hass, DOMAIN_DATA, auto_areas)
-
-    hass.async_create_task(
-        discovery.async_load_platform(
-            hass,
-            component=BINARY_SENSOR_DOMAIN,  # un-intuitive but correct
-            platform=DOMAIN,
-            discovered={},
-            hass_config={"nonempty": "dict"},  # should not be an empty dict
-        )
-    )
-
-    hass.async_create_task(
-        discovery.async_load_platform(
-            hass,
-            component=SWITCH_DOMAIN,
-            platform=DOMAIN,
-            discovered={},
-            hass_config={"nonempty": "dict"},
-        )
-    )
 
     return True
 
 
-async def async_setup_entry(hass, config_entry, async_add_devices):
-    return
+async def async_init(hass: HomeAssistant, entry: ConfigEntry, auto_area: AutoArea):
+    """Initialize component."""
+    await asyncio.sleep(5)  # wait for all area devices to be initialized
+    await auto_area.async_initialize()
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
+    return True
 
 
-async def async_unload_entry(hass, entry):
-    return
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload config entry."""
+    LOGGER.info("🔄 Reloading entry %s", entry)
+
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Handle removal of an entry."""
+    # unsubscribe from changes:
+    hass.data[DOMAIN][entry.entry_id].cleanup()
+
+    # unload platforms:
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data[DOMAIN].pop(entry.entry_id)
+        LOGGER.warning("Unloaded successfully %s", entry.entry_id)
+    else:
+        LOGGER.error("Couldn't unload config entry %s", entry.entry_id)
+
+    return unloaded
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Check for YAML-config."""
+
+    if config.get("auto_areas") is not None:
+        LOGGER.warning(
+            "Detected an existing YAML configuration. "
+            + "This is not supported anymore, please remove it."
+        )
+        issue_registry.async_create_issue(
+            hass,
+            DOMAIN,
+            ISSUE_TYPE_YAML_DETECTED,
+            is_fixable=False,
+            is_persistent=False,
+            severity=issue_registry.IssueSeverity.WARNING,
+            translation_key=ISSUE_TYPE_YAML_DETECTED,
+        )
+
+    return True

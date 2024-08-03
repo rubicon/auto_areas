@@ -1,75 +1,127 @@
-"""
-AutoArea
-Has a set of managed entities assigned to the same area.
-"""
-import logging
-from typing import Set
-
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_UNAVAILABLE
+"""Core area functionality."""
+from __future__ import annotations
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.area_registry import async_get as async_get_area_registry
+from homeassistant.helpers.device_registry import async_get as async_get_device_registry
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.issue_registry import async_create_issue, IssueSeverity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.util import slugify
 from homeassistant.helpers.area_registry import AreaEntry
-from homeassistant.helpers.device_registry import DeviceRegistry
-from homeassistant.helpers.entity_registry import EntityRegistry, RegistryEntry
+from homeassistant.helpers.entity_registry import RegistryEntry
 
-from custom_components.auto_areas.auto_lights import AutoLights
-from custom_components.auto_areas.const import AUTO_AREAS_RELEVANT_DOMAINS
-from custom_components.auto_areas.ha_helpers import get_all_entities
+from .auto_lights import AutoLights
 
-_LOGGER = logging.getLogger(__name__)
+from .ha_helpers import get_all_entities, is_valid_entity
+
+from .const import (
+    CONFIG_AREA,
+    DOMAIN,
+    ISSUE_TYPE_INVALID_AREA,
+    LOGGER,
+    RELEVANT_DOMAINS,
+    NAME,
+    VERSION
+)
 
 
-class AutoArea(object):
-    """An area managed by AutoAreas"""
+class AutoAreasError(Exception):
+    """Exception to indicate a general API error."""
 
-    def __init__(self, hass: HomeAssistant, area: AreaEntry, config: dict) -> None:
+
+class AutoArea:
+    """Class to manage fetching data from the API."""
+
+    config_entry: ConfigEntry
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize."""
+        LOGGER.info('🤖 Auto Area "%s" (%s)', entry.title, entry.options)
         self.hass = hass
-        self.area = area
-        self.area_name = area.name
-        self.area_id = area.id
-        self.config = config.get(area.normalized_name, {})
-        self.entities: Set[RegistryEntry] = set()
+        self.config_entry = entry
 
-        if self.hass.is_running:
-            self.hass.async_create_task(self.initialize())
-        else:
-            self.hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED, self.initialize()
+        self.area_registry = async_get_area_registry(self.hass)
+        self.device_registry = async_get_device_registry(self.hass)
+        self.entity_registry = async_get_entity_registry(self.hass)
+
+        self.area_id: str | None = entry.data.get(CONFIG_AREA, None)
+        self.area: AreaEntry | None = self.area_registry.async_get_area(
+            self.area_id or ""
+        )
+        if self.area_id is None or self.area is None:
+            async_create_issue(
+                hass,
+                DOMAIN,
+                f"{ISSUE_TYPE_INVALID_AREA}_{entry.entry_id}",
+                is_fixable=True,
+                severity=IssueSeverity.ERROR,
+                translation_key=ISSUE_TYPE_INVALID_AREA,
+                data={
+                    "entry_id": entry.entry_id
+                }
             )
 
-    async def initialize(self) -> None:
-        """Register relevant entities for this area"""
-        _LOGGER.info("AutoArea '%s' (config %s)", self.area_name, self.config)
+        self.auto_lights = None
 
-        entity_registry: EntityRegistry = (
-            self.hass.helpers.entity_registry.async_get(self.hass)
+    async def async_initialize(self):
+        """Subscribe to area changes and reload if necessary."""
+        LOGGER.info(
+            "%s: Initializing after HA start",
+            self.area_name
         )
-        device_registry: DeviceRegistry = (
-            self.hass.helpers.device_registry.async_get(self.hass)
+        self.auto_lights = AutoLights(self)
+        await self.auto_lights.initialize()
+
+    def cleanup(self):
+        """Deinitialize this area."""
+        LOGGER.debug(
+            "%s: Disabling area control",
+            self.area_name
         )
+        if self.auto_lights:
+            self.auto_lights.cleanup()
 
-        # Collect entities for this area
-        entities = get_all_entities(
-            entity_registry, device_registry, self.area_id, AUTO_AREAS_RELEVANT_DOMAINS
-        )
-        self.entities = [entity for entity in entities if self.is_valid_entity(entity)]
-
-        # Setup AutoLights
-        self.auto_lights = AutoLights(self.hass, self.entities, self.area, self.config)
-
-        for entity in self.entities:
-            _LOGGER.info(
-                "- Entity %s (device_class: %s)",
-                entity.entity_id,
-                entity.device_class or entity.original_device_class,
+    def get_valid_entities(self) -> list[RegistryEntry]:
+        """Return all valid and relevant entities for this area."""
+        entities = [
+            entity
+            for entity in get_all_entities(
+                self.entity_registry,
+                self.device_registry,
+                self.area_id or "",
+                RELEVANT_DOMAINS,
             )
+            if is_valid_entity(self.hass, entity)
+        ]
+        return entities
 
-    def is_valid_entity(self, entity: RegistryEntry) -> bool:
-        """Checks whether an entity should be included"""
-        if entity.disabled:
-            return False
+    def get_area_entity_ids(self, device_classes: list[str]) -> list[str]:
+        """Return all entity ids in a list of device classes."""
+        return [
+            entity.entity_id
+            for entity in self.get_valid_entities()
+            if entity.device_class in device_classes
+            or entity.original_device_class in device_classes
+        ]
 
-        entity_state = self.hass.states.get(entity.entity_id)
-        if entity_state and entity_state.state == STATE_UNAVAILABLE:
-            return False
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Information about this device."""
+        return {
+            "identifiers": {(DOMAIN, self.config_entry.entry_id)},
+            "name": NAME,
+            "model": VERSION,
+            "manufacturer": NAME,
+            "suggested_area": self.area_name,
+        }
 
-        return True
+    @property
+    def area_name(self) -> str:
+        """Return area name or fallback."""
+        return self.area.name if self.area is not None else "unknown"
+
+    @property
+    def slugified_area_name(self) -> str:
+        """Return slugified area name or fallback."""
+        return slugify(self.area.name) if self.area is not None else "unknown"
